@@ -1,0 +1,901 @@
+---
+title: "Comparsion of R packages for CPUE standardisation"
+author: |
+  | Darcy Webber
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  pdf_document:
+    includes: null
+    keep_tex: yes
+    toc: yes
+    toc_depth: 2
+    dev: png
+    number_sections: true
+  html_document:
+    keep_md: yes
+    theme: flatly
+    toc: yes
+    toc_depth: 2
+    dev: png
+    number_sections: true
+  word_document: 
+    keep_md: yes
+    toc: yes
+    toc_depth: 2
+    dev: png
+    number_sections: true
+csl: fisheries.csl
+editor_options: 
+  chunk_output_type: console
+header-includes: \usepackage{caption} \usepackage{float} \usepackage{color}
+---
+
+\captionsetup[table]{labelformat=empty}
+\captionsetup[figure]{labelformat=empty}
+
+```{r global_options, include=FALSE}
+rm(list = ls())
+library(knitr)
+options(encoding = "UTF-8")
+knitr::opts_chunk$set(fig.width = 10, fig.height = 6, echo = FALSE, warning = FALSE, message = FALSE, fig.lp = '')
+```
+
+```{r, load_packages, include=FALSE}
+library(captioner)
+library(pander)
+library(sf)
+library(tidyverse)
+#library(rstan)
+# library(TMB)
+
+do_estimate <- FALSE
+# do_estimate <- TRUE
+
+PlotOptions <- list()
+PlotOptions$theme <- "document"
+seed <- 50242900
+set.seed(seed = seed)
+
+fig_nums <- captioner(prefix = "Figure")
+tab_nums <- captioner(prefix = "Table")
+
+load("cpue_edw.rda")
+
+geo_mean <- function(a){prod(a)^(1/length(a))}
+```
+
+
+\newpage\clearpage
+
+# Introduction
+
+This document is illustrates several different R packages useful for CPUE analyses. It includes examples of non-spatial, spatial, and spatio-temporal CPUE standardisation models. It will also illustrate delta models, hurdle models, and zero-inflated models  when I get around to it.
+
+A population-level effect is the Bayesian version of a fixed-effect, and a group-level effect is the Bayesian word for a random-effect.
+
+
+# Non-spatial models
+
+Five R packages are tested using a basic CPUE model that includes `year` and `month` as fixed-effects. The dependent variable is `cpue` which in this case is the catch per tow (for tows where the catch > 0).
+
+## glm
+
+The R function `glm` (from the `stats` package which comes with base R and is automatically loaded) is likely the most widely used. The `glm` function does not include a `lognormal` family, so a `gaussian` distribution must be used and a log transform done on the `cpue`:
+
+```{r eval=FALSE, include=TRUE, results="hide", echo=TRUE, background="gray"}
+fit1 <- glm(log(cpue) ~ year + month, 
+            data = data,
+            family = "gaussian")
+```
+
+
+## gam
+
+The R function `gam` (from the `mgcv` package) is also resonably common.
+
+```{r eval=FALSE, include=TRUE, results="hide", echo=TRUE, background="gray"}
+library(mgcv)
+
+fit2 <- gam(log(cpue) ~ year + month, 
+            data = data,
+            family = "gaussian")
+```
+
+
+## brms
+
+The R function `brm` (from the `brms` package) is fully Bayesian, making use of Stans Hamiltonian Monte Carlo (HMC) MCMC algorithm. The `bmrs` package does not include a `lognormal` family making a lognormal model easy to fit:
+
+```{r eval=FALSE, include=TRUE, results="hide", echo=TRUE, background="gray"}
+library(brms)
+
+fit3 <- brm(cpue ~ year + month,
+            data = data,
+            family = lognormal())
+```
+
+The `brms` package also provides several functions and features that makes it very easy to use. For example, extracting the coefficients by year is very easy using:
+
+```{r eval=FALSE, include=TRUE, results="hide", echo=TRUE, background="gray"}
+newdata <- data.frame(year = sort(unique(data$year)), month = NA)
+year_coefs <- fitted(fit3, newdata = newdata)
+```
+
+Notice the `month = NA` declaration in the `newdata` data frame that is being passed to the `fitted` function. This is unique to `brms` and allows average predictions to be made each fishing year, with uncertainty, and no need for any further processing of the coeficients to derive a CPUE series. The posterior predictive distribution by year can also be computed easily using:
+
+```{r eval=FALSE, include=TRUE, results="hide", echo=TRUE, background="gray"}
+year_pp <- predict(fit3, newdata = newdata)
+```
+
+The `brms` package includes many other families above and beyond the standard families. For example `student`, `bernoulli`, `weibull`, `wiener`, `Beta`, `dirichlet` and many more. Several hurdle models are easily coded using `hurdle_poisson`, `hurdle_negbinomial`, `huedle_gamma`, `hurdle_lognormal`. And several zero inflated models `zero_inflated_beta`, `zero_inflated_poisson`, `zero_inflated_negbinomial`, `zero_inflated_binomial`. And if that is not enough, then custom families can be defined by writing your own distribution using Stan code.
+
+What's more, several packages have been developed to help with model comparison and model averaging (i.e. using the `loo` package), plotting diagnostics (the `rstan` package), and model fits (the `bayesplot` pacakge):
+
+```{r eval=FALSE, include=TRUE, results="hide", echo=TRUE, background="gray"}
+library(rstan)
+
+fit3 <- add_criterion(fit3, criterion = c("loo", "waic"))
+stan_trace(object = fit3, pars = "month")
+pp_check(object = fit3)
+```
+
+Speed is an issue with brms. Small models with just a few population-level or group-level effects and few data points run very quickly. However, big data sets or complex models with splines become very slow. The software includes spatial modelling features such as CAR models, but these are also very slow.
+
+
+## INLA
+
+INLA is also Bayesian (using the Laplace approximation). INLA also includes the `lognormal` family:
+
+```{r eval=FALSE, include=TRUE, results="hide", echo=TRUE, background="gray"}
+library(INLA)
+
+fit4 <- inla(cpue ~ year + month, 
+             data = data,
+             family = "lognormal",
+             control.compute = list(config = TRUE))
+```
+
+INLA seems to have a limit on what it can do though as it flops with large data sets. Spatial models are relatively fast using the SPDE. Data manipulation becomes complex very quickly with INLA. But it is worth the learning curve.
+
+
+## glmmTMB
+
+The glmmTMB package is also Bayesian (using the Laplace approximation).
+
+```{r eval=FALSE, include=TRUE, results="hide", echo=TRUE, background="gray"}
+library(glmmTMB)
+
+fit5 <- glmmTMB(log(cpue) ~ year + month,
+                data = edw_pos,
+                family = "gaussian")
+```
+
+Seems like it has some spatial modelling features.
+
+
+```{r include=FALSE}
+# Test brms
+library(brms)
+
+if (do_estimate) {
+  test_brms_lognormal <- brm(cpue ~ year + month,
+                             data = edw_pos,
+                             chains = 1,
+                             family = lognormal())
+  test_brms_lognormal <- add_criterion(test_brms_lognormal, "loo")
+
+  test_brms_gamma <- brm(cpue ~ year + month,
+                         data = edw_pos,
+                         chains = 1,
+                         family = "gamma")
+  test_brms_gamma <- add_criterion(test_brms_gamma, "loo")
+
+  test_brms_binomial <- brm(hu ~ year + month,
+                            data = cpue_edw,
+                            chains = 1,
+                            family = bernoulli())
+  # test_brms_binomial <- add_criterion(test_brms_binomial, "loo")
+
+  save(test_brms_lognormal, test_brms_gamma, test_brms_binomial, file = "brms_runs.rda")
+} else {
+  load("brms_runs.rda")
+}
+
+# loo_compare(test_brms_lognormal, test_brms_gamma)
+
+newdata <- expand.grid(year = sort(unique(edw_pos$year)), month = NA)
+
+pred_brms_lognormal <- fitted(test_brms_lognormal, newdata = newdata) %>% 
+  data.frame() %>% select(-Est.Error) %>% cbind(newdata) %>% mutate(Function = "brms::brm", Distribution = "lognormal")
+pred_brms_gamma <- fitted(test_brms_gamma, newdata = newdata) %>% 
+  data.frame() %>% select(-Est.Error) %>% cbind(newdata) %>% mutate(Function = "brms::brm", Distribution = "gamma")
+pred_brms_binomial <- fitted(test_brms_binomial, newdata = newdata) %>% 
+  data.frame() %>% select(-Est.Error) %>% cbind(newdata) %>% mutate(Function = "brms::brm", Distribution = "binomial")
+pred_brms <- bind_rows(pred_brms_lognormal, pred_brms_gamma, pred_brms_binomial)
+
+unloadNamespace("brms")
+
+# Test glmmTMB
+library(glmmTMB)
+
+if (do_estimate) {
+  test_tmb_lognormal <- glmmTMB(log(cpue) ~ year + month,
+                                data = edw_pos,
+                                family = "gaussian")
+
+  test_tmb_gamma <- glmmTMB(cpue ~ year + month,
+                            data = edw_pos,
+                            family = Gamma(link = "log"))
+
+  test_tmb_binomial <- glmmTMB(hu ~ year + month,
+                               data = cpue_edw,
+                               family = binomial(link = "logit"))
+
+  save(test_tmb_lognormal, test_tmb_gamma, test_tmb_binomial, file = "glmmTMB_runs.rda")
+} else {
+  load("glmmTMB_runs.rda")
+}
+
+coefs <- c(0, fixef(test_tmb_lognormal)$cond[grepl("year", names(fixef(test_tmb_lognormal)$cond))])
+coefs <- exp(coefs)
+coefs <- coefs / geo_mean(coefs)
+coefs <- coefs * geo_mean(pred_brms_lognormal$Estimate)
+pred_tmb_lognormal <- data.frame(Estimate = coefs, Q2.5 = NA, Q97.5 = NA) %>%
+  cbind(newdata) %>% mutate(Function = "glmmTMB::glmmTMB", Distribution = "lognormal")
+
+coefs <- c(0, fixef(test_tmb_gamma)$cond[grepl("year", names(fixef(test_tmb_gamma)$cond))])
+coefs <- exp(coefs)
+coefs <- coefs / geo_mean(coefs)
+coefs <- coefs * geo_mean(pred_brms_gamma$Estimate)
+pred_tmb_gamma <- data.frame(Estimate = coefs, Q2.5 = NA, Q97.5 = NA) %>%
+  cbind(newdata) %>% mutate(Function = "glmmTMB::glmmTMB", Distribution = "gamma")
+
+coefs <- c(0, fixef(test_tmb_binomial)$cond[grepl("year", names(fixef(test_tmb_binomial)$cond))])
+coefs <- exp(coefs) / (1 + exp(coefs))
+coefs <- coefs / geo_mean(coefs)
+coefs <- coefs * geo_mean(pred_brms_binomial$Estimate)
+pred_tmb_binomial <- data.frame(Estimate = coefs, Q2.5 = NA, Q97.5 = NA) %>%
+  cbind(newdata) %>% mutate(Function = "glmmTMB::glmmTMB", Distribution = "binomial")
+
+pred_tmb <- bind_rows(pred_tmb_lognormal, pred_tmb_gamma, pred_tmb_binomial)
+
+unloadNamespace("glmmTMB")
+
+# Test INLA
+library(INLA)
+
+if (do_estimate) {
+  test_inla_lognormal <- inla(cpue ~ -1 + year + month, 
+                              data = edw_pos,
+                              family = "lognormal",
+                              control.compute = list(config = TRUE))
+
+  test_inla_gamma <- inla(cpue ~ -1 + year + month, 
+                          data = edw_pos,
+                          family = "gamma",
+                          control.compute = list(config = TRUE))
+  
+  test_inla_binomial <- inla(hu ~ -1 + year + month, 
+                             data = cpue_edw,
+                             family = "binomial",
+                             Ntrials = 1,
+                             # Correction of the Laplace Approximation for Binomial data with many zeros (http://arxiv.org/abs/1503.07307)
+                             control.inla = list(correct = TRUE, correct.factor = 10),
+                             control.family = list(control.link = list(model = "logit")),
+                             control.compute = list(config = TRUE))
+
+    # test_inla_zbinom <- inla(hu ~ -1 + year + month, 
+    #                          data = cpue_edw,
+    #                          # data = cpue_edw %>% sample_frac(size = 0.7),
+    #                          family = "zeroinflatednbinomial0",
+    #                          Ntrials = 1,
+    #                          # Correction of the Laplace Approximation for Binomial data with many zeros (http://arxiv.org/abs/1503.07307)
+    #                          control.inla = list(correct = TRUE, correct.factor = 10),
+    #                          # control.inla = list(diagonal = 100, strategy = "gaussian", int.strategy = "eb"),
+    #                          # control.mode = list(result = test_inla_init, restart = TRUE),
+    #                          control.compute = list(config = TRUE))
+  
+  save(test_inla_lognormal, test_inla_gamma, test_inla_binomial, file = "inla_runs.rda")
+} else {
+  load("inla_runs.rda")
+}
+
+coefs <- test_inla_lognormal$summary.fixed[grepl("year", rownames(test_inla_lognormal$summary.fixed)),]$mean
+coefs <- exp(coefs)
+coefs <- coefs / geo_mean(coefs)
+coefs <- coefs * geo_mean(pred_brms_lognormal$Estimate)
+pred_inla_lognormal <- data.frame(Estimate = coefs, Q2.5 = NA, Q97.5 = NA) %>% 
+  cbind(newdata) %>% mutate(Function = "INLA::inla", Distribution = "lognormal")
+
+coefs <- test_inla_gamma$summary.fixed$mean[grepl("year", rownames(test_inla_gamma$summary.fixed))]
+coefs <- exp(coefs)
+coefs <- coefs / geo_mean(coefs)
+coefs <- coefs * geo_mean(pred_brms_gamma$Estimate)
+pred_inla_gamma <- data.frame(Estimate = coefs, Q2.5 = NA, Q97.5 = NA) %>% 
+  cbind(newdata) %>% mutate(Function = "INLA::inla", Distribution = "gamma")
+
+coefs <- test_inla_binomial$summary.fixed$mean[grepl("year", rownames(test_inla_binomial$summary.fixed))]
+coefs <- exp(coefs) / (1 + exp(coefs))
+coefs <- coefs / geo_mean(coefs)
+coefs <- coefs * geo_mean(pred_brms_binomial$Estimate)
+pred_inla_binomial <- data.frame(Estimate = coefs, Q2.5 = NA, Q97.5 = NA) %>% 
+  cbind(newdata) %>% mutate(Function = "INLA::inla", Distribution = "binomial")
+
+pred_inla <- bind_rows(pred_inla_lognormal, pred_inla_gamma, pred_inla_binomial)
+
+unloadNamespace("INLA")
+
+# Test GAM
+library(mgcv)
+
+if (do_estimate) {
+  test_gam_lognormal <- gam(log(cpue) ~ year + month, 
+                            data = edw_pos, 
+                            family = "gaussian")
+
+  test_gam_gamma <- gam(cpue ~ year + month, 
+                        data = edw_pos, 
+                        family = Gamma(link = "log"))
+
+  test_gam_binomial <- gam(hu ~ year + month, 
+                           data = cpue_edw, 
+                           family = binomial(link = "logit"))
+  
+  save(test_gam_lognormal, test_gam_gamma, test_gam_binomial, file = "mgcv_runs.rda")
+} else {
+  load("mgcv_runs.rda")
+}
+
+coefs <- c(0, coefficients(test_gam_lognormal)[grepl("year", names(coefficients(test_gam_lognormal)))])
+coefs <- exp(coefs)
+coefs <- coefs / geo_mean(coefs)
+coefs <- coefs * geo_mean(pred_brms_lognormal$Estimate)
+pred_gam_lognormal <- data.frame(Estimate = coefs, Q2.5 = NA, Q97.5 = NA) %>% 
+  cbind(newdata) %>% mutate(Function = "mgcv::gam", Distribution = "lognormal")
+
+coefs <- c(0, coefficients(test_gam_gamma)[grepl("year", names(coefficients(test_gam_gamma)))])
+coefs <- exp(coefs)
+coefs <- coefs / geo_mean(coefs)
+coefs <- coefs * geo_mean(pred_brms_gamma$Estimate)
+pred_gam_gamma <- data.frame(Estimate = coefs, Q2.5 = NA, Q97.5 = NA) %>%
+  cbind(newdata) %>% mutate(Function = "mgcv::gam", Distribution = "gamma")
+# newdata$month <- 1
+# pred_gam_gamma <- predict.gam(test_gam_gamma, newdata = newdata, type = "terms", exclude = "month")
+# newdata$month <- NA
+# pred_gam_gamma <- data.frame(Estimate = rowSums(pred_gam_gamma) + attr(pred_gam_gamma, "constant")) %>%
+#   cbind(newdata) %>% mutate(Function = "mgcv::gam", Distribution = "gamma")
+
+coefs <- c(0, coefficients(test_gam_binomial)[grepl("year", names(coefficients(test_gam_binomial)))])
+coefs <- exp(coefs) / (1 + exp(coefs))
+coefs <- coefs / geo_mean(coefs)
+coefs <- coefs * geo_mean(pred_brms_binomial$Estimate)
+pred_gam_binomial <- data.frame(Estimate = coefs, Q2.5 = NA, Q97.5 = NA) %>% 
+  cbind(newdata) %>% mutate(Function = "mgcv::gam", Distribution = "binomial")
+
+pred_gam <- bind_rows(pred_gam_lognormal, pred_gam_gamma, pred_gam_binomial)
+
+unloadNamespace("mgcv")
+
+
+# Try glm
+
+if (do_estimate) {
+  test_glm_lognormal <- glm(log(cpue) ~ year + month, 
+                            data = edw_pos,
+                            family = "gaussian")
+
+  test_glm_binomial <- glm(hu ~ year + month, 
+                           data = cpue_edw, 
+                           family = "binomial")
+    
+  save(test_glm_lognormal, test_glm_binomial, file = "glm_runs.rda")
+} else {
+  load("glm_runs.rda")
+}
+
+coefs <- c(0, coefficients(test_glm_lognormal)[grepl("year", names(coefficients(test_glm_lognormal)))])
+coefs <- exp(coefs)
+coefs <- coefs / geo_mean(coefs)
+coefs <- coefs * geo_mean(pred_brms_lognormal$Estimate)
+pred_glm_lognormal <- data.frame(Estimate = coefs, Q2.5 = NA, Q97.5 = NA) %>% 
+  cbind(newdata) %>% mutate(Function = "stats::glm", Distribution = "lognormal")
+
+coefs <- c(0, coefficients(test_glm_binomial)[grepl("year", names(coefficients(test_glm_binomial)))])
+coefs <- exp(coefs) / (1 + exp(coefs))
+coefs <- coefs / geo_mean(coefs)
+coefs <- coefs * geo_mean(pred_brms_binomial$Estimate)
+pred_glm_binomial <- data.frame(Estimate = coefs, Q2.5 = NA, Q97.5 = NA) %>% 
+  cbind(newdata) %>% mutate(Function = "stats::glm", Distribution = "binomial")
+
+pred_glm <- bind_rows(pred_glm_lognormal, pred_glm_binomial)
+
+# library(devtools)
+# install_github("james-thorson/VAST", INSTALL_opts="--no-staged-install")
+# library(VAST)
+# 
+# Method <- c("Grid", "Mesh", "Spherical_mesh")[2]
+# grid_size_km <- 25
+# n_x <- 1000   # Specify number of stations (a.k.a. "knots")
+# 
+# FieldConfig <- c("Omega1" = 1, "Epsilon1" = 1, "Omega2" = 1, "Epsilon2" = 1) 
+# RhoConfig <- c("Beta1" = 0, "Beta2" = 0, "Epsilon1" = 0, "Epsilon2" = 0)
+# OverdispersionConfig <- c("Eta1" = 0, "Eta2" = 0)
+# ObsModel <- c(2,0)  
+# Options <- c("SD_site_density" = FALSE, "SD_site_logdensity" = FALSE, "Calculate_Range" = TRUE, "Calculate_effective_area" = TRUE)
+# 
+# Data_Geostat = data.frame("Catch_KG" = cpue_edw$catch, 
+#                           "Year" = cpue_edw$year, 
+#                           "Vessel" = cpue_edw$vessel, 
+#                           "AreaSwept_km2" = 1, 
+#                           "Lat" = st_coordinates(cpue_edw)[,1], 
+#                           "Lon" = st_coordinates(cpue_edw)[,2], 
+#                           "Pass" = 1)
+# 
+# Region <- "new_zealand"
+# Extrapolation_List <- make_extrapolation_info(Region = Region)#, strata.limits = strata.limits)
+# 
+# Spatial_List <- make_spatial_info(grid_size_km = grid_size_km, 
+#                                   n_x = n_x, 
+#                                   Method = Method, 
+#                                   Lon_i = Data_Geostat[,'Lon'], Lat_i = Data_Geostat[,'Lat'], 
+#                                   Extrapolation_List = Extrapolation_List, DirPath = DateFile, Save_Results = FALSE, fine_scale = TRUE)
+# 
+# Data_Geostat = cbind(Data_Geostat, "knot_i" = Spatial_List$knot_i)
+# 
+# TmbData = make_data("Version" = Version, "FieldConfig" = FieldConfig, "OverdispersionConfig" = OverdispersionConfig, 
+#                     "RhoConfig" = RhoConfig, "ObsModel" = ObsModel, "c_i" = rep(0,nrow(Data_Geostat)), "b_i" = Data_Geostat[,'Catch_KG'],
+#                     "a_i" = Data_Geostat[,'AreaSwept_km2'], "v_i" = as.numeric(Data_Geostat[,'Vessel'])-1, "s_i" = Data_Geostat[,'knot_i']-1,
+#                     "t_i" = Data_Geostat[,'Year'], "spatial_list" = Spatial_List, "Options" = Options )
+# 
+# TmbList <- make_model("TmbData" = TmbData, 
+#                       "RunDir" = DateFile, 
+#                       "Version" = Version, 
+#                       "RhoConfig" = RhoConfig, 
+#                       "loc_x" = Spatial_List$loc_x, 
+#                       "Method" = Spatial_List$Method)
+# 
+# Obj <- TmbList[["Obj"]]
+# 
+# Opt <- TMBhelper::Optimize(obj = Obj, lower = TmbList[["Lower"]], upper = TmbList[["Upper"]], 
+#                            getsd = TRUE, savedir = DateFile, bias.correct = TRUE, newtonsteps = 1, 
+#                            bias.correct.control = list(sd = FALSE, split = NULL, nsplit = 1, vars_to_correct = "Index_cyl") )
+```
+
+
+`r fig_compare_pkg <- fig_nums(name = "fig_compare_pkg", caption = "Comparison of different packages in R that can be used for CPUE analysis for three distributions. The lognormal and Gamma distributions use the log link and the binomial distribution uses the logit link. Uncertainty is provided for the brms model runs only, all series are scaled to the geometric mean of the brms model runs. A simple model that included fishing year and month was done. The binomial INLA model used a reduced data set (70% of the total data set) because the original data set was too big.")`
+
+```{r fig_compare_pkg, fig.cap = fig_compare_pkg, fig.height = 12}
+pred <- bind_rows(pred_brms, pred_tmb, pred_glm, pred_gam, pred_inla)
+# pred$Function <- factor(pred$Function, levels = c("INLA::inla", "stats::glm", "mgcv::gam", "brms::brm"))
+pred$Distribution <- factor(pred$Distribution, levels = c("lognormal", "gamma", "binomial"))
+
+ggplot(data = pred, aes(x = year, y = Estimate, colour = Function, group = Function)) +
+  geom_pointrange(aes(ymin = Q2.5, ymax = Q97.5)) +
+  geom_point() +
+  facet_wrap(~ Distribution, scales = "free_y", ncol = 1) +
+  theme_bw()
+```
+
+
+
+\newpage\clearpage
+
+# Spatial models
+
+Now I test some spatial models (i.e. a spatial effect that is constant through time). First I create some fake data using the `volcano` data set in R. In this first example the spatial effect is the same each year, in other words the volcano does not change from year to year. The simulated data is
+$$\log( z_{yi} ) = \exp \left( \beta_y \right) + s(x,y) + \varepsilon_i$$
+$$\varepsilon_i \sim N(0, 0.01)$$
+where $z_{yi}$ is an observation of the CPUE for each fising event $i$ each year $y$, and $s(x,y)$ is the volcano.
+
+```{r echo=TRUE}
+library(reshape2)
+library(tidyverse)
+library(scales)
+set.seed(1)
+
+data(volcano)
+
+# Create a year effect
+year <- 1991:2020
+n <- length(year)
+year_eff <- rnorm(n = n, mean = 0, sd = 1)
+
+ggplot(data = data.frame(year, year_eff)) +
+  geom_line(aes(x = year, y = year_eff)) +
+  theme_bw() +
+  labs(x = "Year", y = "Year-effect")
+
+# Create a spatial effect using the volcano data set but rescale it to a similar scale 
+# to the year effect
+volcano1 <- log(rescale(volcano, to = range(exp(year_eff))))
+volcano_df <- melt(volcano1) %>% mutate(Type = "Original")
+
+ggplot(data = volcano_df) +
+  geom_tile(aes(x = Var1, y = Var2, fill = exp(value))) +
+  scale_fill_viridis_c() + 
+  theme_bw() +
+  labs(x = NULL, y = NULL)
+
+data <- NULL
+for (i in 1:n) {
+  m <- round(runif(n = 1, min = 100, max = 2000), 0) # take a random number of samples (fishing events)
+  err <- rnorm(n = length(volcano), 0, 0.01)
+  d1 <- melt(volcano1) %>% 
+    rename(x = Var1, y = Var2) %>%
+    mutate(yr = year_eff[i], year = factor(year[i]), err = err) %>% 
+    filter(ifelse(year %in% 1991:2000, x < 44, x >= 0)) %>%
+    filter(ifelse(year %in% 2007:2015, y < 20, y >= 0)) %>%
+    sample_n(m, replace = TRUE) %>% 
+    mutate(cpue = exp(yr + value + err))
+  data <- rbind(data, d1)
+}
+
+head(data)
+glimpse(data)
+nrow(data)
+ggplot(data, aes(x = year, y = cpue)) +
+  geom_point() +
+  theme_bw() +
+  labs(x = "Year", y = "Simulated CPUE")
+
+ggplot(data = data %>% filter(year == 2020)) +
+  geom_tile(aes(x = x, y = y, fill = cpue)) +
+  facet_wrap(~year) +
+  scale_fill_viridis_c() +
+  theme_bw() +
+  labs(x = NULL, y = NULL)
+
+ggplot(data = data) +
+  geom_tile(aes(x = x, y = y, fill = cpue)) +
+  facet_wrap(~year) +
+  scale_fill_viridis_c() +
+  theme_bw() +
+  labs(x = NULL, y = NULL)
+```
+
+`r fig_compare_space_inla <- fig_nums(name = "fig_compare_space_inla", caption = "Comparison of different packages in R that can be used for spatial CPUE.")`
+
+```{r fig_compare_space_inla, echo=TRUE, fig.cap=fig_compare_space_inla, fig.height=12}
+library(INLA)
+library(reshape2)
+library(sf)
+
+loc <- data %>% select(x, y) %>% as.matrix()
+
+mesh <- inla.mesh.2d(
+  loc = loc,
+  cutoff = 2,
+  max.n.strict = 700)
+mesh$n
+plot(mesh)
+points(loc, col = 2)
+
+spde <- inla.spde2.pcmatern(mesh = mesh, 
+                            prior.range = c(0.5, 0.01), 
+                            prior.sigma = c(1, 0.01))
+
+A <- inla.spde.make.A(mesh = mesh, loc = loc)
+
+stack <- inla.stack(
+  tag = "space1",
+  data = list(cpue = data$cpue),
+  A = list(A, 1),
+  effects = list(s = 1:spde$n.spde,
+                 data.frame(year = data$year)))
+
+if (do_estimate) {
+  space1 <- inla(cpue ~ -1 + year + f(s, model = spde),
+                 data = inla.stack.data(stack),
+                 family = "lognormal",
+                 control.predictor = list(A = inla.stack.A(stack)))
+  
+  blind1 <- inla(cpue ~ year,
+                 data = data,
+                 family = "lognormal")
+
+  save(space1, blind1, data, loc, mesh, A, spde, stack, file = "space1.rda")
+} else {
+  load("space1.rda")
+}
+
+field <- space1$summary.random[['s']][['mean']]
+
+xlim <- range(loc[,1])
+ylim <- range(loc[,2])
+proj <- inla.mesh.projector(mesh, xlim = xlim, ylim = ylim, dims = dim(volcano))
+
+field_proj <- inla.mesh.project(proj, field)
+rownames(field_proj) <- proj$x
+colnames(field_proj) <- proj$y
+pred_df <- melt(field_proj) %>%
+  mutate(x = Var1, y = Var2, Type = "Reconstruction") %>%
+  mutate(value = rescale(value, to = range(volcano_df$value)))
+
+ggplot(data = bind_rows(volcano_df, pred_df)) +
+  geom_tile(aes(x = Var1, y = Var2, fill = exp(value))) +
+  facet_wrap(~Type, ncol = 1) +
+  scale_fill_viridis_c() + 
+  theme_bw() +
+  labs(x = NULL, y = NULL, fill = NULL)
+
+coefs1 <- exp(space1$summary.fixed$mean)
+coefs1 <- coefs1 / geo_mean(coefs1)
+
+coefs2 <- exp(c(0, blind1$summary.fixed$mean[2:n]))
+coefs2 <- coefs2 / geo_mean(coefs2)
+
+true_coefs <- exp(year_eff)
+true_coefs <- true_coefs / geo_mean(true_coefs)
+
+plot(true_coefs, type = "b")
+lines(coefs1, col = 2)
+lines(coefs2, col = 3)
+```
+
+
+\newpage\clearpage
+
+# Spatio-temporal models
+
+Again we simulate a data set. I use the volcano data set again, but this time the volcano moves north/up over time.
+
+```{r echo=TRUE}
+# Create a spatial effect using the volcano data set but
+# rescale it to a similar scale to the year effect
+data(volcano)
+volcano1 <- log(rescale(volcano, to = range(exp(year_eff))))
+
+volcano_array <- array(NA, dim = c(n, dim(volcano)))
+nshift <- 1
+for (i in 1:n) {
+  if (i == 1) {
+    volcano2 <- volcano1
+  } else {
+    volcano2 <- volcano_array[i - 1,,]
+  }
+  volcano2[,(nshift + 1):ncol(volcano2)] <- volcano2[,1:(ncol(volcano2) - nshift)]
+  volcano2[,1:nshift] <- 0
+  volcano_array[i,,] <- volcano2
+}
+volcano_df2 <- melt(volcano_array) %>% 
+  mutate(Type = "Original") %>% 
+  rename(t = Var1, Var1 = Var2, Var2 = Var3)
+
+ggplot(data = volcano_df2) +
+  geom_tile(aes(x = Var1, y = Var2, fill = exp(value))) +
+  facet_wrap(~t) +
+  theme_bw() +
+  scale_fill_viridis_c()
+
+data <- NULL
+for (i in 1:n) {
+  # take a random number of samples (fishing events)
+  m <- round(runif(n = 1, min = 100, max = 2000), 0)
+  err <- rnorm(n = length(volcano), 0, 0.01)
+  d1 <- melt(volcano_array[i,,]) %>% 
+    rename(x = Var1, y = Var2) %>%
+    mutate(yr = year_eff[i], year = factor(year[i]), err = err) %>% 
+    sample_n(m, replace = TRUE) %>% 
+    mutate(cpue = exp(yr + value + err))
+  data <- rbind(data, d1)
+}
+
+loc <- data %>% select(x, y) %>% as.matrix()
+
+mesh <- inla.mesh.2d(
+  loc = loc,
+  cutoff = 2,
+  max.n.strict = 1000)
+mesh$n
+plot(mesh)
+points(loc, col = 2)
+
+spde <- inla.spde2.pcmatern(mesh = mesh, 
+                            prior.range = c(0.5, 0.01), 
+                            prior.sigma = c(1, 0.01))
+
+A <- inla.spde.make.A(mesh, loc = loc, group = as.numeric(data$year))
+
+iset <- inla.spde.make.index('i', n.spde = spde$n.spde, n.group = n)
+
+stack <- inla.stack(
+  tag = "space2",
+  data = list(cpue = data$cpue),
+  A = list(A, 1),
+  effects = list(iset,
+                 data.frame(year = data$year)))
+
+# We set the PC-prior for the temporal autoregressive parameter with P(cor > 0) = 0.9
+h.spec <- list(theta = list(prior = 'pccor1', param = c(0, 0.9)))
+prec.prior <- list(prior = 'pc.prec', param = c(1, 0.01))
+
+if (do_estimate) {
+  space2 <- inla(cpue ~ -1 + year + 
+                   f(i, model = spde, group = i.group, control.group = list(model = "ar1", hyper = h.spec)),
+                 data = inla.stack.data(stack),
+                 family = "lognormal",
+                 control.predictor = list(A = inla.stack.A(stack)))
+  
+  blind2 <- inla(cpue ~ year,
+                 data = data,
+                 family = "lognormal")
+
+  save(space2, blind2, data, loc, iset, mesh, A, spde, stack, file = "space2.rda")
+} else {
+  load("space2.rda")
+}
+
+xlim <- range(loc[,1])
+ylim <- range(loc[,2])
+proj <- inla.mesh.projector(mesh, xlim = xlim, ylim = ylim, dims = dim(volcano))
+
+fout <- NULL
+for (i in 1:n) {
+  j <- which(iset$i.group == i)
+  field <- space2$summary.random[['i']][['mean']][j]
+  # print(sum(field))
+  # print(length(field))
+  field_proj <- inla.mesh.project(proj, field)
+  rownames(field_proj) <- proj$x
+  colnames(field_proj) <- proj$y
+  fout <- rbind(fout, melt(field_proj) %>% mutate(group = i, year = unique(data$year)[i]))
+}
+
+pred_df <- fout %>%
+  mutate(x = Var1, y = Var2, Type = "Reconstruction")# %>%
+  #mutate(value = rescale(value, to = range(volcano_df$value)))
+
+ggplot(data = pred_df) +
+  geom_tile(aes(x = Var1, y = Var2, fill = exp(value))) +
+  facet_wrap(~year) +
+  scale_fill_viridis_c() + 
+  labs(x = NULL, y = NULL, fill = NULL) +
+  theme_bw() +
+  theme(axis.title = element_blank(), axis.text = element_blank(), axis.ticks = element_blank())
+
+coefs1 <- exp(space2$summary.fixed$mean)
+coefs1 <- coefs1 / geo_mean(coefs1)
+
+coefs2 <- exp(c(0, blind2$summary.fixed$mean[2:n]))
+coefs2 <- coefs2 / geo_mean(coefs2)
+
+true_coefs <- exp(year_eff)
+true_coefs <- true_coefs / geo_mean(true_coefs)
+
+plot(true_coefs, type = "b")
+lines(coefs1, col = 2)
+lines(coefs2, col = 3)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+\newpage\clearpage
+
+## glmmTMB
+
+See this webiste for spatial models https://cran.r-project.org/web/packages/glmmTMB/vignettes/covstruct.html. I am not sure glmmTMB uses multiple cores, it seemd to only use one core on my machine. It does look to have likelihood profile methods. Too slow though by the looks of it.
+
+```{r echo=TRUE}
+# library(glmmTMB)
+# 
+# data <- data %>% mutate(pos = numFactor(x, y), group = 1)
+# 
+# space2 <- glmmTMB(log(z) ~ year + exp(pos + 0 | group), data = data)
+# 
+# #as.data.frame(ranef(space2))
+# coefs <- exp(c(0, fixef(space2)$cond[2:n]))
+# coefs <- coefs / geo_mean(coefs)
+# 
+# true_coefs <- exp(year_eff)
+# true_coefs <- true_coefs / geo_mean(true_coefs)
+# 
+# plot(coefs, type = "l")
+# lines(true_coefs, col = 3)
+# 
+# confint(space2, "sigma")
+# 
+# newdata <- data.frame(pos = numFactor(expand.grid(x = 1:3, y = 1:3)))
+# newdata$group <- factor(rep(1, nrow(newdata)))
+# newdata$year <- factor(2020)
+# newdata
+# predict(space2, newdata, type = "response", allow.new.levels = TRUE)
+# 
+# predict_col <- function(i) {
+#     newdata <- data.frame(pos = numFactor(expand.grid(1:nrow(volcano), i)))
+#     newdata$group <- factor(rep(1, nrow(newdata)))
+#     newdata$year <- factor(2020)
+#     predict(space2, newdata = newdata, type = "response", allow.new.levels = TRUE)
+# }
+# pred <- sapply(1:ncol(volcano), predict_col)
+# pred_df <- melt(pred / sum(pred, na.rm = TRUE)) %>% mutate(Type = "Reconstruction")
+# 
+# sum(volcano_df$value)
+# sum(pred_df$value)
+# 
+# # ggplot(data = pred_df) +
+# ggplot(data = bind_rows(volcano_df, pred_df)) +
+#   geom_tile(aes(x = Var1, y = Var2, fill = value)) +
+#   facet_wrap(~Type, ncol = 1) +
+#   scale_fill_viridis_c()
+```
+
+
+## INLA
+
+Simple spatial models are resonably easy to set up in INLA. INLA is set up to use multiple cores to help speed things up.
+
+`r fig_compare_space <- fig_nums(name = "fig_compare_space", caption = "Comparison of different packages in R that can be used for spatial CPUE.")`
+
+```{r fig_compare_space, echo=TRUE, fig.cap=fig_compare_space, fig.height=12}
+library(INLA)
+
+loc <- st_coordinates(edw_pos)
+
+mesh <- inla.mesh.2d(
+  loc = loc,
+  cutoff = 23000,
+  max.n.strict = 120)
+
+spde <- inla.spde2.pcmatern(mesh = mesh, 
+                            prior.range = c(50, 0.01), 
+                            prior.sigma = c(1, 0.01))
+
+A <- inla.spde.make.A(mesh = mesh, loc = loc)
+
+stack <- inla.stack(
+  tag = "space1",
+  data = list(cpue = edw_pos$cpue),
+  A = list(A, 1),
+  effects = list(s = 1:spde$n.spde,
+                 data.frame(year = edw_pos$year)))
+
+if (do_estimate) {
+  space1 <- inla(cpue ~ year + f(s, model = spde),
+                 data = inla.stack.data(stack),
+                 family = "gamma",
+                 control.predictor = list(A = inla.stack.A(stack)))
+  
+  save(space1, file = "inla_space.rda")
+} else {
+  load("inla_space.rda")
+}
+
+field <- space1$summary.random[['s']][['mean']]
+
+xlim <- range(st_coordinates(edw_pos)[,1])
+ylim <- range(st_coordinates(edw_pos)[,2])
+proj <- inla.mesh.projector(mesh, xlim = xlim, ylim = ylim, dims = c(250, 500))
+
+field_proj <- inla.mesh.project(proj, field)
+rownames(field_proj) <- proj$x
+colnames(field_proj) <- proj$y
+sfield <- reshape2::melt(field_proj) %>%
+  st_as_sf(coords = c('Var1', 'Var2'), crs = st_crs(edw_pos)) %>%
+  mutate(x = st_coordinates(.)[,1], y = st_coordinates(.)[,2])
+
+ggplot(data = sfield) +
+  geom_tile(aes(x = x, y = y, fill = value)) +
+  # geom_sf(data = coast_sf_km, fill = "black", colour = NA) +
+  coord_sf(xlim = xlim, ylim = ylim) +
+  scale_fill_viridis_c(na.value = NA) +
+  labs(x = NULL, y = NULL, fill = NULL) +
+  theme_bw() +
+  theme(legend.position = "bottom", legend.key.width = unit(3, "cm"))
+```
+
+
+
+\newpage\clearpage
+
+# Discussion
+
+What we really need is a version of INLA written in TMB. VAST attempted to fulfill this role, but it has become a black box.
