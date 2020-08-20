@@ -62,6 +62,9 @@ tab_nums <- captioner(prefix = "Table")
 load("cpue_edw.rda")
 
 geo_mean <- function(a){prod(a)^(1/length(a))}
+
+# Simulate a data set
+year_coef <- poly()
 ```
 
 
