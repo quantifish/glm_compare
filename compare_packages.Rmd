@@ -59,12 +59,17 @@ set.seed(seed = seed)
 fig_nums <- captioner(prefix = "Figure")
 tab_nums <- captioner(prefix = "Table")
 
-load("cpue_edw.rda")
-
 geo_mean <- function(a){prod(a)^(1/length(a))}
 
+load("cpue_edw.rda")
+data <- cpue_edw %>%
+  as.data.frame() %>%
+  mutate(y = cpue) %>%
+  select(cpue, year, month) %>%
+  filter(!is.na(cpue), cpue > 0)
+
 # Simulate a data set
-year_coef <- poly()
+# year_coef <- poly()
 ```
 
 
@@ -87,33 +92,34 @@ The R function `glm` (from the `stats` package which comes with base R and is au
 
 ```{r eval=FALSE, include=TRUE, results="hide", echo=TRUE, background="gray"}
 fit1 <- glm(log(cpue) ~ year + month, 
-            data = data,
+            data = data, 
             family = "gaussian")
 ```
 
 
 ## gam
 
-The R function `gam` (from the `mgcv` package) is also resonably common.
+The R function `gam` (from the `mgcv` package) is also reasonably common.
 
 ```{r eval=FALSE, include=TRUE, results="hide", echo=TRUE, background="gray"}
 library(mgcv)
 
 fit2 <- gam(log(cpue) ~ year + month, 
-            data = data,
+            data = data, 
             family = "gaussian")
 ```
 
 
 ## brms
 
-The R function `brm` (from the `brms` package) is fully Bayesian, making use of Stans Hamiltonian Monte Carlo (HMC) MCMC algorithm. The `bmrs` package does not include a `lognormal` family making a lognormal model easy to fit:
+The R function `brm` (from the `brms` package) is fully Bayesian, making use of Stans Hamiltonian Monte Carlo (HMC) MCMC algorithm. The `bmrs` package includes the `lognormal` family making a lognormal model easy to fit:
 
 ```{r eval=FALSE, include=TRUE, results="hide", echo=TRUE, background="gray"}
 library(brms)
+options(mc.cores = parallel::detectCores())
 
-fit3 <- brm(cpue ~ year + month,
-            data = data,
+fit3 <- brm(cpue ~ year + month, 
+            data = data, 
             family = lognormal())
 ```
 
@@ -158,8 +164,7 @@ fit4 <- inla(cpue ~ year + month,
              control.compute = list(config = TRUE))
 ```
 
-INLA seems to have a limit on what it can do though as it flops with large data sets. Spatial models are relatively fast using the SPDE. Data manipulation becomes complex very quickly with INLA. But it is worth the learning curve.
-
+INLA seems to have a limit on what it can do though as it flops with large data sets. Spatial models are relatively fast using the SPDE. Data manipulation becomes complex very quickly with INLA. But it is worth the learning curve for spatial modelling.
 
 ## glmmTMB
 
@@ -174,6 +179,17 @@ fit5 <- glmmTMB(log(cpue) ~ year + month,
 ```
 
 Seems like it has some spatial modelling features.
+
+## tmbstan
+
+Need to add this example.
+
+```{r eval=FALSE, include=TRUE, results="hide", echo=TRUE, background="gray"}
+library(tmbstan)
+
+# fit6 <- tmbstan(log(cpue) ~ year + month, data = edw_pos, family = "gaussian")
+```
+
 
 
 ```{r include=FALSE}
@@ -377,7 +393,7 @@ pred_gam_binomial <- data.frame(Estimate = coefs, Q2.5 = NA, Q97.5 = NA) %>%
 
 pred_gam <- bind_rows(pred_gam_lognormal, pred_gam_gamma, pred_gam_binomial)
 
-unloadNamespace("mgcv")
+# unloadNamespace("mgcv")
 
 
 # Try glm
@@ -465,9 +481,9 @@ pred_glm <- bind_rows(pred_glm_lognormal, pred_glm_binomial)
 ```
 
 
-`r fig_compare_pkg <- fig_nums(name = "fig_compare_pkg", caption = "Comparison of different packages in R that can be used for CPUE analysis for three distributions. The lognormal and Gamma distributions use the log link and the binomial distribution uses the logit link. Uncertainty is provided for the brms model runs only, all series are scaled to the geometric mean of the brms model runs. A simple model that included fishing year and month was done. The binomial INLA model used a reduced data set (70% of the total data set) because the original data set was too big.")`
+`r fig_compare_pkg1 <- fig_nums(name = "fig_compare_pkg", caption = "Comparison of different packages in R that can be used for CPUE analysis for three distributions. The lognormal and Gamma distributions use the log link and the binomial distribution uses the logit link. Uncertainty is provided for the brms model runs only, all series are scaled to the geometric mean of the brms model runs. A simple model that included fishing year and month was done. The binomial INLA model used a reduced data set (70% of the total data set) because the original data set was too big.")`
 
-```{r fig_compare_pkg, fig.cap = fig_compare_pkg, fig.height = 12}
+```{r fig_compare_pkg1, fig.cap = fig_compare_pkg1, fig.height = 12}
 pred <- bind_rows(pred_brms, pred_tmb, pred_glm, pred_gam, pred_inla)
 # pred$Function <- factor(pred$Function, levels = c("INLA::inla", "stats::glm", "mgcv::gam", "brms::brm"))
 pred$Distribution <- factor(pred$Distribution, levels = c("lognormal", "gamma", "binomial"))
@@ -476,9 +492,23 @@ ggplot(data = pred, aes(x = year, y = Estimate, colour = Function, group = Funct
   geom_pointrange(aes(ymin = Q2.5, ymax = Q97.5)) +
   geom_point() +
   facet_wrap(~ Distribution, scales = "free_y", ncol = 1) +
-  theme_bw()
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = NULL)
 ```
 
+```{r fig_compare_pkg2, fig.cap = fig_compare_pkg1, fig.height = 12}
+pred2 <- pred %>%
+  filter(year == "2019")
+
+ggplot(data = pred2, aes(x = year, y = Estimate, colour = Function, group = Function)) +
+  geom_pointrange(aes(ymin = Q2.5, ymax = Q97.5)) +
+  geom_point() +
+  facet_wrap(~ Distribution, scales = "free_y", ncol = 1) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = NULL)
+```
 
 
 \newpage\clearpage
@@ -573,9 +603,7 @@ mesh$n
 plot(mesh)
 points(loc, col = 2)
 
-spde <- inla.spde2.pcmatern(mesh = mesh, 
-                            prior.range = c(0.5, 0.01), 
-                            prior.sigma = c(1, 0.01))
+spde <- inla.spde2.pcmatern(mesh = mesh, prior.range = c(0.5, 0.01), prior.sigma = c(1, 0.01))
 
 A <- inla.spde.make.A(mesh = mesh, loc = loc)
 
@@ -685,10 +713,7 @@ for (i in 1:n) {
 
 loc <- data %>% select(x, y) %>% as.matrix()
 
-mesh <- inla.mesh.2d(
-  loc = loc,
-  cutoff = 2,
-  max.n.strict = 1000)
+mesh <- inla.mesh.2d(loc = loc, cutoff = 2, max.n.strict = 1000)
 mesh$n
 plot(mesh)
 points(loc, col = 2)
@@ -713,8 +738,7 @@ h.spec <- list(theta = list(prior = 'pccor1', param = c(0, 0.9)))
 prec.prior <- list(prior = 'pc.prec', param = c(1, 0.01))
 
 if (do_estimate) {
-  space2 <- inla(cpue ~ -1 + year + 
-                   f(i, model = spde, group = i.group, control.group = list(model = "ar1", hyper = h.spec)),
+  space2 <- inla(cpue ~ -1 + year + f(i, model = spde, group = i.group, control.group = list(model = "ar1", hyper = h.spec)),
                  data = inla.stack.data(stack),
                  family = "lognormal",
                  control.predictor = list(A = inla.stack.A(stack)))
