@@ -37,7 +37,7 @@ header-includes: \usepackage{caption} \usepackage{float} \usepackage{color}
 rm(list = ls())
 library(knitr)
 options(encoding = "UTF-8")
-knitr::opts_chunk$set(fig.width = 10, fig.height = 6, echo = FALSE, warning = FALSE, message = FALSE, fig.lp = '')
+opts_chunk$set(fig.width = 7, fig.height = 6, dpi = 300, echo = FALSE, warning = FALSE, message = FALSE, fig.lp = '')
 ```
 
 ```{r, load_packages, include=FALSE}
@@ -45,8 +45,9 @@ library(captioner)
 library(pander)
 library(sf)
 library(tidyverse)
-#library(rstan)
-# library(TMB)
+
+logit <- qlogis # add to influ2 and remove
+logistic <- plogis
 
 do_estimate <- FALSE
 # do_estimate <- TRUE
@@ -62,6 +63,7 @@ tab_nums <- captioner(prefix = "Table")
 geo_mean <- function(a){prod(a)^(1/length(a))}
 
 load("cpue_edw.rda")
+
 data <- cpue_edw %>%
   as.data.frame() %>%
   mutate(y = cpue) %>%
@@ -116,6 +118,7 @@ The R function `brm` (from the `brms` package) is fully Bayesian, making use of 
 
 ```{r eval=FALSE, include=TRUE, results="hide", echo=TRUE, background="gray"}
 library(brms)
+
 options(mc.cores = parallel::detectCores())
 
 fit3 <- brm(cpue ~ year + month, 
@@ -225,11 +228,14 @@ if (do_estimate) {
 newdata <- expand.grid(year = sort(unique(edw_pos$year)), month = NA)
 
 pred_brms_lognormal <- fitted(test_brms_lognormal, newdata = newdata) %>% 
-  data.frame() %>% select(-Est.Error) %>% cbind(newdata) %>% mutate(Function = "brms::brm", Distribution = "lognormal")
+  data.frame() %>% select(-Est.Error) %>% cbind(newdata) %>% 
+  mutate(Function = "brms::brm", Distribution = "lognormal")
 pred_brms_gamma <- fitted(test_brms_gamma, newdata = newdata) %>% 
-  data.frame() %>% select(-Est.Error) %>% cbind(newdata) %>% mutate(Function = "brms::brm", Distribution = "gamma")
+  data.frame() %>% select(-Est.Error) %>% cbind(newdata) %>% 
+  mutate(Function = "brms::brm", Distribution = "gamma")
 pred_brms_binomial <- fitted(test_brms_binomial, newdata = newdata) %>% 
-  data.frame() %>% select(-Est.Error) %>% cbind(newdata) %>% mutate(Function = "brms::brm", Distribution = "binomial")
+  data.frame() %>% select(-Est.Error) %>% cbind(newdata) %>% 
+  mutate(Function = "brms::brm", Distribution = "binomial")
 pred_brms <- bind_rows(pred_brms_lognormal, pred_brms_gamma, pred_brms_binomial)
 
 unloadNamespace("brms")
@@ -365,11 +371,30 @@ if (do_estimate) {
   load("mgcv_runs.rda")
 }
 
-coefs <- c(0, coefficients(test_gam_lognormal)[grepl("year", names(coefficients(test_gam_lognormal)))])
+ii <- grepl("year", names(coefficients(test_gam_lognormal)))
+
+Vb <- vcov(test_gam_lognormal, unconditional = TRUE)
+se <- c(0, sqrt(diag(Vb))[ii])
+
+coefs <- c(0, coefficients(test_gam_lognormal)[ii])
+lower <- coefs - (2 * se)
+upper <- coefs + (2 * se)
+
 coefs <- exp(coefs)
-coefs <- coefs / geo_mean(coefs)
+lower <- exp(lower)
+upper <- exp(upper)
+gm <- geo_mean(coefs)
+
+coefs <- coefs / gm
 coefs <- coefs * geo_mean(pred_brms_lognormal$Estimate)
-pred_gam_lognormal <- data.frame(Estimate = coefs, Q2.5 = NA, Q97.5 = NA) %>% 
+
+lower <- lower / gm
+lower <- lower * geo_mean(pred_brms_lognormal$Estimate)
+
+upper <- upper / gm
+upper <- upper * geo_mean(pred_brms_lognormal$Estimate)
+
+pred_gam_lognormal <- data.frame(Estimate = coefs, Q2.5 = lower, Q97.5 = upper) %>% 
   cbind(newdata) %>% mutate(Function = "mgcv::gam", Distribution = "lognormal")
 
 coefs <- c(0, coefficients(test_gam_gamma)[grepl("year", names(coefficients(test_gam_gamma)))])
@@ -420,7 +445,7 @@ pred_glm_lognormal <- data.frame(Estimate = coefs, Q2.5 = NA, Q97.5 = NA) %>%
   cbind(newdata) %>% mutate(Function = "stats::glm", Distribution = "lognormal")
 
 coefs <- c(0, coefficients(test_glm_binomial)[grepl("year", names(coefficients(test_glm_binomial)))])
-coefs <- exp(coefs) / (1 + exp(coefs))
+coefs <- logistic(coefs)
 coefs <- coefs / geo_mean(coefs)
 coefs <- coefs * geo_mean(pred_brms_binomial$Estimate)
 pred_glm_binomial <- data.frame(Estimate = coefs, Q2.5 = NA, Q97.5 = NA) %>% 
@@ -483,7 +508,7 @@ pred_glm <- bind_rows(pred_glm_lognormal, pred_glm_binomial)
 
 `r fig_compare_pkg1 <- fig_nums(name = "fig_compare_pkg", caption = "Comparison of different packages in R that can be used for CPUE analysis for three distributions. The lognormal and Gamma distributions use the log link and the binomial distribution uses the logit link. Uncertainty is provided for the brms model runs only, all series are scaled to the geometric mean of the brms model runs. A simple model that included fishing year and month was done. The binomial INLA model used a reduced data set (70% of the total data set) because the original data set was too big.")`
 
-```{r fig_compare_pkg1, fig.cap = fig_compare_pkg1, fig.height = 12}
+```{r fig_compare_pkg1, fig.cap = fig_compare_pkg1, fig.height = 8}
 pred <- bind_rows(pred_brms, pred_tmb, pred_glm, pred_gam, pred_inla)
 # pred$Function <- factor(pred$Function, levels = c("INLA::inla", "stats::glm", "mgcv::gam", "brms::brm"))
 pred$Distribution <- factor(pred$Distribution, levels = c("lognormal", "gamma", "binomial"))
@@ -497,11 +522,11 @@ ggplot(data = pred, aes(x = year, y = Estimate, colour = Function, group = Funct
   labs(x = NULL)
 ```
 
-```{r fig_compare_pkg2, fig.cap = fig_compare_pkg1, fig.height = 12}
+```{r fig_compare_pkg2, fig.cap = fig_compare_pkg1, fig.height = 8}
 pred2 <- pred %>%
   filter(year == "2019")
 
-ggplot(data = pred2, aes(x = year, y = Estimate, colour = Function, group = Function)) +
+ggplot(data = pred2, aes(x = Function, y = Estimate, colour = Function, group = Function)) +
   geom_pointrange(aes(ymin = Q2.5, ymax = Q97.5)) +
   geom_point() +
   facet_wrap(~ Distribution, scales = "free_y", ncol = 1) +
